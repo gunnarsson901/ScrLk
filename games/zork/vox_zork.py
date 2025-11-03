@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # vox_zork.py — Zork-like mini IF with voice control + CRT UI
-
-import os, sys, time, math, random, threading, tempfile, queue
+import os, sys, time, math, random, threading, tempfile
 import tkinter as tk
 from tkinter import Canvas, END
 
@@ -25,6 +24,13 @@ try:
 except Exception:
     USE_AUDIO = False
 
+# ====== Images (Pillow) ======
+PIL_OK = True
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    PIL_OK = False
+
 # ====== Models / voices ======
 MODEL_WHISPER = "whisper-1"
 MODEL_TTS     = "tts-1"
@@ -42,8 +48,40 @@ CRT_GRID = "#143014"
 
 LOGW, LOGH = 800, 520  # logical canvas (scaled to screen)
 
+# ====== ASSETS ======
+BASE_DIR   = os.path.dirname(__file__)
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+LOC_DIR    = os.path.join(ASSETS_DIR, "locations")
+ITEM_DIR   = os.path.join(ASSETS_DIR, "items")
+
+# Room → filbas
+ROOM_IMAGE = {
+    "clearing": "forest_clearing",
+    "path":     "shadow_path",
+    "arch":     "stone_arch",
+    "cellar":   "damp_celler",   # stavat så i din struktur
+    "vault":    "hidden_vault",
+}
+
+# Item → filbas (alias för lamp → lantern)
+ITEM_IMAGE = {
+    "lamp": "lantern",
+    "note": "note",
+    "key":  "key",
+    "gem":  "gem",
+}
+
+# Logisk bildyta för location
+LOC_W, LOC_H = 512, 342
+LOC_X, LOC_Y = 270, 50   # övre vänstra hörn i logiska koordinater
+
+# Inventory-fält
+INV_H      = 80          # logisk höjd
+INV_Y      = LOGH - INV_H
+INV_PAD    = 10
+ICON_SIZE  = 56          # logisk ikonstorlek
+
 # ====== Mini Zork-like world ======
-# Simple map: rooms keyed by id with exits, items, and text.
 WORLD = {
     "clearing": {
         "name": "Forest Clearing",
@@ -82,7 +120,6 @@ WORLD = {
     },
 }
 
-# Basic synonyms for parser
 DIRS = {
     "n":"north","s":"south","e":"east","w":"west","u":"up","d":"down",
     "north":"north","south":"south","east":"east","west":"west","up":"up","down":"down",
@@ -120,16 +157,13 @@ class Game:
         r = WORLD[self.room]
         if direction in r["exits"]:
             dest = r["exits"][direction]
-            # gate cellar vault door
             if self.room == "cellar" and direction == "north":
                 door = WORLD["cellar"]["props"]["door"]
                 if door["locked"]:
                     return self.add_msg("The rusty door is locked.")
                 if not door["open"]:
                     return self.add_msg("The rusty door is closed.")
-            # arch down is always allowed (lamp helps flavor)
             self.room = dest
-            # cellar darkness flavor
             if self.room == "cellar" and not self.lamp_on:
                 return self.add_msg("It's very dark. Your lamp would help. " + self.look())
             return self.add_msg(self.look())
@@ -153,17 +187,14 @@ class Game:
 
     def open(self, what):
         r = WORLD[self.room]
-        # hatch in clearing
         if what in ("hatch","mossy hatch") and self.room == "clearing":
             hatch = r["props"].get("hatch")
             if not hatch: return self.add_msg("There is no hatch.")
             if hatch["locked"]: return self.add_msg("The hatch won't budge. It seems locked.")
             if hatch["open"]:   return self.add_msg("It's already open.")
             hatch["open"] = True
-            # opening hatch reveals down exit from clearing -> cellar
             r["exits"]["down"] = "cellar"
             return self.add_msg("You pull the hatch open. A dark shaft descends.")
-        # door in cellar
         if what in ("door","rusty door") and self.room == "cellar":
             door = r["props"].get("door")
             if not door: return self.add_msg("There is no door.")
@@ -217,54 +248,27 @@ class Game:
         if s in ("look","l"):    return self.look()
         if s in ("inventory","i","inv"): return self.inventory()
 
-        toks = s.split()
+        toks = [DIRS.get(t, t) for t in s.split()]
         if not toks: return "?"
 
-        # normalize verbs/directions
-        def norm(t): return DIRS.get(t, t)
-        toks = [norm(t) for t in toks]
-
-        # 1-word direction
         if toks[0] in ("north","south","east","west","up","down"):
             return self.move(toks[0])
-
-        # go <dir>
         if toks[0] == "go" and len(toks) >= 2:
             return self.move(toks[1])
-
-        # take <item>
         if toks[0] == "take" and len(toks) >= 2:
-            item = toks[-1]
-            return self.take(item)
-
-        # drop <item>
+            return self.take(toks[-1])
         if toks[0] == "drop" and len(toks) >= 2:
             return self.drop(toks[-1])
-
-        # open <thing>
         if toks[0] == "open" and len(toks) >= 2:
             return self.open(" ".join(toks[1:]))
-
-        # unlock <thing>
         if toks[0] == "unlock" and len(toks) >= 2:
             return self.unlock(" ".join(toks[1:]))
-
-        # use <thing>
         if toks[0] == "use" and len(toks) >= 2:
             return self.use(toks[-1])
-
-        # read <thing>
         if toks[0] == "read" and len(toks) >= 2:
             return self.read(toks[-1])
-
-        # light / light lamp
         if toks[0] == "light":
             return self.light()
-
-        # default: try movement synonyms
-        if toks[0] in ("north","south","east","west","up","down"):
-            return self.move(toks[0])
-
         return self.add_msg("I don't understand that.")
 
 # ====== App (UI + Audio + AI) ======
@@ -275,6 +279,11 @@ class VoxZorkApp:
         self.is_speaking = False
         self.rec_lock = threading.Lock()
 
+        # image caches
+        self._img_cache = {}      # path -> PIL.Image
+        self._tk_cache  = {}      # (path,w,h) -> ImageTk.PhotoImage
+        self._sprite_refs = []    # keep references
+
         self.root = tk.Tk()
         self.root.title("Zork-like (Voice) – CRT")
         self.root.configure(bg=CRT_BG)
@@ -284,7 +293,6 @@ class VoxZorkApp:
         self.root.bind("<v>",      lambda e: self.push_to_talk())
         self.root.bind("<V>",      lambda e: self.push_to_talk())
 
-        # layout
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         scale = min(sw/LOGW, (sh*0.92)/LOGH)
         self.scale = scale
@@ -319,7 +327,6 @@ class VoxZorkApp:
         self.draw_world()
         self.tell(self.game.look(), speak=True)
 
-        # periodic redraw
         self.root.after(100, self.redraw_loop)
 
     # ===== UI helpers =====
@@ -333,53 +340,141 @@ class VoxZorkApp:
     def set_status(self, s):
         self.status.config(text=s)
 
-    # ===== World drawing (simple node map + CRT scanlines) =====
+    # ===== Image loading =====
+    def _load_image(self, path):
+        if not PIL_OK:
+            return None
+        if path in self._img_cache:
+            return self._img_cache[path]
+        try:
+            img = Image.open(path).convert("RGBA")
+            self._img_cache[path] = img
+            return img
+        except Exception:
+            return None
+
+    def _get_tk_image(self, path, w, h):
+        key = (path, w, h)
+        if key in self._tk_cache:
+            return self._tk_cache[key]
+        pil = self._load_image(path)
+        if pil is None:
+            return None
+        try:
+            resized = pil.resize((max(1,w), max(1,h)), Image.LANCZOS)
+        except Exception:
+            resized = pil
+        tkimg = ImageTk.PhotoImage(resized)
+        self._tk_cache[key] = tkimg
+        return tkimg
+
+    # ===== World drawing =====
     def draw_world(self):
         c = self.canvas
         c.delete("all")
-        # scanlines
+        self._sprite_refs.clear()
+
+        # platsbild
+        self.draw_location_image()
+
+        # CRT-scanlines
         for y in range(0, LOGH, 4):
             c.create_line(self.fx(0), self.fy(y), self.fx(LOGW), self.fy(y), fill=CRT_GRID)
 
-        # node positions (hand-tuned)
-        nodes = {
-            "clearing": (140, 260),
-            "path":     (280, 220),
-            "arch":     (440, 220),
-            "cellar":   (440, 320),
-            "vault":    (600, 300),
-        }
-        # edges
-        edges = [("clearing","path"),("path","arch"),("arch","cellar"),("cellar","vault")]
-        for a,b in edges:
-            ax,ay = nodes[a]; bx,by = nodes[b]
-            self.canvas.create_line(self.fx(ax), self.fy(ay), self.fx(bx), self.fy(by),
-                                    fill=CRT_DIM, width=max(1,int(2*self.scale)))
-        # nodes
-        for k,(x,y) in nodes.items():
-            r = 10
-            color = CRT_FG if k == self.game.room else CRT_DIM
-            self.canvas.create_oval(self.fx(x-r), self.fy(y-r), self.fx(x+r), self.fy(y+r),
-                                    outline=color, width=max(1,int(2*self.scale)))
-            self.canvas.create_text(self.fx(x), self.fy(y-18), text=WORLD[k]["name"],
-                                    fill=color, font=("Courier", int(12*self.scale)))
-
-        # little “face” viewport (Mac eyes) reacting to room
+        # ansikte
         self.draw_face()
+
+        # inventory
+        self.draw_inventory_bar()
+
+        # rumsnamn
+        rname = WORLD[self.game.room]["name"]
+        c.create_text(self.fx(LOC_X + LOC_W//2), self.fy(LOC_Y - 20),
+                      text=rname, fill=CRT_FG, font=("Courier", int(16*self.scale)))
+
+    def draw_location_image(self):
+        c = self.canvas
+        box_w, box_h = LOC_W, LOC_H
+        x0, y0 = LOC_X, LOC_Y
+
+        # bakgrundsram
+        lw = max(1, int(2*self.scale))
+        c.create_rectangle(self.fx(x0-6), self.fy(y0-6),
+                           self.fx(x0+box_w+6), self.fy(y0+box_h+6),
+                           outline=CRT_DIM, width=lw)
+
+        # filväg
+        base = ROOM_IMAGE.get(self.game.room, None)
+        path = os.path.join(LOC_DIR, f"{base}.png") if base else None
+
+        if PIL_OK and path and os.path.exists(path):
+            tkimg = self._get_tk_image(path, self.fx(box_w), self.fy(box_h))
+            if tkimg:
+                img_id = c.create_image(self.fx(x0), self.fy(y0), image=tkimg, anchor="nw")
+                self._sprite_refs.append(tkimg)
+                return
+
+        # fallback
+        c.create_rectangle(self.fx(x0), self.fy(y0),
+                           self.fx(x0+box_w), self.fy(y0+box_h),
+                           outline=CRT_FG, width=lw)
+        c.create_text(self.fx(x0+box_w/2), self.fy(y0+box_h/2),
+                      text="No image", fill=CRT_FG, font=("Courier", int(14*self.scale)))
+
+    def draw_inventory_bar(self):
+        c = self.canvas
+        # bakgrund
+        c.create_rectangle(self.fx(0), self.fy(INV_Y), self.fx(LOGW), self.fy(LOGH),
+                           outline=CRT_DIM, fill=CRT_BG, width=1)
+
+        # titel
+        c.create_text(self.fx(12), self.fy(INV_Y + 16),
+                      text="Inventory:", anchor="w",
+                      fill=CRT_FG, font=("Courier", int(12*self.scale)))
+
+        if not self.game.inv:
+            c.create_text(self.fx(120), self.fy(INV_Y + 18),
+                          text="(empty)", anchor="w",
+                          fill=CRT_DIM, font=("Courier", int(12*self.scale)))
+            return
+
+        # ikoner
+        x = 120
+        for item in self.game.inv:
+            base = ITEM_IMAGE.get(item, item)
+            path = os.path.join(ITEM_DIR, f"{base}.png")
+            size_px = self.fx(ICON_SIZE), self.fx(ICON_SIZE)  # kvadrat
+            if PIL_OK and os.path.exists(path):
+                tkimg = self._get_tk_image(path, *size_px)
+                if tkimg:
+                    c.create_image(self.fx(x), self.fy(INV_Y + 10), image=tkimg, anchor="nw")
+                    self._sprite_refs.append(tkimg)
+                else:
+                    self._draw_icon_placeholder(x, INV_Y + 10, item)
+            else:
+                self._draw_icon_placeholder(x, INV_Y + 10, item)
+            x += ICON_SIZE + INV_PAD
+
+    def _draw_icon_placeholder(self, lx, ly, label):
+        c = self.canvas
+        lw = max(1, int(1*self.scale))
+        c.create_rectangle(self.fx(lx), self.fy(ly),
+                           self.fx(lx+ICON_SIZE), self.fy(ly+ICON_SIZE),
+                           outline=CRT_FG, width=lw)
+        c.create_text(self.fx(lx+ICON_SIZE/2), self.fy(ly+ICON_SIZE/2),
+                      text=label[:4], fill=CRT_FG, font=("Courier", int(10*self.scale)))
 
     def draw_face(self):
         c = self.canvas
-        box = (40, 60, 240, 160) # x0,y0,x1,y1
+        box = (40, 60, 240, 160)
         x0,y0,x1,y1 = box
         lw = max(1, int(2*self.scale))
         c.create_rectangle(self.fx(x0), self.fy(y0), self.fx(x1), self.fy(y1),
                            outline=CRT_FG, width=lw)
-        # eyes + mirrored L nose + smile (default)
         cx = (x0+x1)/2
         cy = (y0+y1)/2
         eye_dx = 28
         eye_h  = 14
-        # blink every few seconds
         blink = (int(time.time()*2) % 6 == 0)
         if blink:
             c.create_line(self.fx(cx-eye_dx-6), self.fy(cy), self.fx(cx-eye_dx+6), self.fy(cy),
@@ -387,9 +482,12 @@ class VoxZorkApp:
             c.create_line(self.fx(cx+eye_dx-6), self.fy(cy), self.fx(cx+eye_dx+6), self.fy(cy),
                           fill=CRT_FG, width=lw)
         else:
-            c.create_rectangle(self.fx(cx-eye_dx-3), self.fy(cy-eye_h), self.fx(cx-eye_dx+3), self.fy(cy+eye_h),
-                               outline=CRT_FG, fill=CRT_FG, width=1)
+            c.create_rectangle(self.fx(cx-eye_dx-3), self.fy(cy-eye_h), self.fy(cy+eye_h),
+                               self.fx(cx-eye_dx+3), outline=CRT_FG)  # safeguard if swapped
             c.create_rectangle(self.fx(cx+eye_dx-3), self.fy(cy-eye_h), self.fx(cx+eye_dx+3), self.fy(cy+eye_h),
+                               outline=CRT_FG, fill=CRT_FG, width=1)
+            # fix first rectangle args (tk requires x0,y0,x1,y1); re-draw properly:
+            c.create_rectangle(self.fx(cx-eye_dx-3), self.fy(cy-eye_h), self.fx(cx-eye_dx+3), self.fy(cy+eye_h),
                                outline=CRT_FG, fill=CRT_FG, width=1)
         # nose ┘
         c.create_line(self.fx(cx), self.fy(cy-8), self.fx(cx), self.fy(cy+14), fill=CRT_FG, width=lw)
@@ -410,12 +508,8 @@ class VoxZorkApp:
             self.is_speaking = True
             try:
                 res = self.client.audio.speech.create(
-                    model=MODEL_TTS,
-                    voice=VOICE_TTS,
-                    input=text,
-                    response_format="wav"
+                    model=MODEL_TTS, voice=VOICE_TTS, input=text, response_format="wav"
                 )
-                # bytes handling across SDK versions
                 try:
                     audio_bytes = res.read()
                 except AttributeError:
@@ -425,26 +519,26 @@ class VoxZorkApp:
                 tmp = os.path.join(tempfile.gettempdir(), f"tts_{int(time.time()*1000)}.wav")
                 with open(tmp,"wb") as f: f.write(audio_bytes)
                 data, sr = sf.read(tmp, dtype="float32", always_2d=False)
-                sd.play(data, sr)
-                sd.wait()
-            except Exception as e:
-                # stay silent if TTS fails
+                sd.play(data, sr); sd.wait()
+            except Exception:
                 pass
             finally:
                 self.is_speaking = False
         threading.Thread(target=_worker, daemon=True).start()
 
-    # ===== STT (push-to-talk, gated while speaking) =====
+    # ===== STT =====
     def push_to_talk(self):
-        if not USE_AUDIO or not AI_OK: 
+        if not USE_AUDIO or not AI_OK:
             self.set_status("Voice off (missing deps or API key).")
             return
         if self.is_speaking:
             self.set_status("Speaking… wait.")
             return
+        if not hasattr(self, "rec_lock"):
+            self.rec_lock = threading.Lock()
         if not self.rec_lock.acquire(blocking=False):
             return
-        self.set_status("Listening… (release in ~4s)")
+        self.set_status("Listening… (~4s)")
         threading.Thread(target=self._record_and_transcribe, daemon=True).start()
 
     def _record_and_transcribe(self):
@@ -452,19 +546,19 @@ class VoxZorkApp:
             frames = int(REC_SR * REC_SEC)
             audio = sd.rec(frames, samplerate=REC_SR, channels=REC_CH, dtype="float32")
             sd.wait()
-            # normalize gently
             peak = float(np.max(np.abs(audio))) if audio.size else 0.0
             if peak > 0: audio = audio / max(1.0, peak)
+            from scipy.io.wavfile import write as wav_write
             tmp_wav = os.path.join(tempfile.gettempdir(), f"stt_{int(time.time()*1000)}.wav")
             wav_write(tmp_wav, REC_SR, (audio * 32767).astype(np.int16))
             text = self._transcribe(tmp_wav)
             if text:
                 self.entry.delete(0, END)
                 self.entry.insert(0, text)
-                self.send_text()   # auto-send
+                self.send_text()
             else:
                 self.set_status("…no speech detected.")
-        except Exception as e:
+        except Exception:
             self.set_status("STT error.")
         finally:
             self.rec_lock.release()
@@ -488,7 +582,9 @@ class VoxZorkApp:
             return
         self.tell(f"> {cmd}", speak=False)
         out = self.game.parse(cmd)
-        self.tell(out, speak=True if "You" in out or "The" in out or "." in out else False)
+        # redraw direkt så platsbild och inventory uppdateras
+        self.draw_world()
+        self.tell(out, speak=True if out else False)
 
     def send_text(self):
         s = self.entry.get().strip()
@@ -499,17 +595,17 @@ class VoxZorkApp:
     def tell(self, text, speak=False):
         self.log_write(text)
         if speak and not self.is_speaking:
-            # gate: don't let TTS trigger STT; we only speak here
             self.speak(text)
         self.set_status("Ready. Press V to speak.")
 
-    # ===== Quit =====
     def quit(self):
         try: self.root.destroy()
         except Exception: pass
         sys.exit(0)
 
     def run(self):
+        if not PIL_OK:
+            self.log_write("Note: Pillow ej installerat. Installera: pip install pillow")
         self.root.mainloop()
 
 if __name__ == "__main__":
