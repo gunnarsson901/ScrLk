@@ -1,0 +1,40 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&dpi>;
+        __overlay__ {
+            status = "okay";
+            pinctrl-names = "default";
+            pinctrl-0 = <&dpi_pins>;
+
+            output-format = <6>;  // RGB888 (RGB24)
+            clock-frequency = <15667200>;
+            hactive = <512>;
+            vactive = <342>;
+            hsync-active = <0>;
+            vsync-active = <0>;
+            hsync-front-porch = <14>;
+            hsync-pulse = <178>;
+            hsync-back-porch = <0>;
+            vsync-front-porch = <0>;
+            vsync-pulse = <4>;
+            vsync-back-porch = <24>;
+            de-active = <0>;
+            pixel-order = <0>;
+        };
+    };
+
+    fragment@1 {
+        target = <&gpio>;
+        __overlay__ {
+            dpi_pins: dpi_pins {
+                brcm,pins = <9 3 2>;        // G2, HSYNC, VSYNC
+                brcm,function = <0 0 0>;      // ALT0 (DPI)
+            };
+        };
+    };
+};

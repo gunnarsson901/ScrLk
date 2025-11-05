@@ -1,0 +1,65 @@
+# For more options and information see
+# http://rptl.io/configtxt
+
+# Uncomment some or all of these to enable the optional hardware interfaces
+#dtparam=i2c_arm=on
+#dtparam=i2s=on
+#dtparam=spi=on
+
+# Enable audio (loads snd_bcm2835)
+dtparam=audio=off
+
+# Automatically load overlays for detected cameras
+camera_auto_detect=0
+
+# Automatically load overlays for detected DSI displays
+display_auto_detect=0
+
+# Automatically load initramfs files, if found
+auto_initramfs=1
+
+# Enable DRM VC4 V3D driver (This should be active by default in Bookworm, but uncommenting ensures it)
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2 # Increase max framebuffers slightly for stability
+
+# Run in 64-bit mode
+arm_64bit=1
+
+# Disable compensation for displays with overscan
+disable_overscan=1
+
+# Run as fast as firmware / board allows
+arm_boost=1
+
+[all]
+# Load your custom pin definition overlay:
+dtoverlay=dpi-g2only-2-3-9
+
+# Load the modern generic DPI driver:
+dtoverlay=vc4-kms-dpi-generic
+
+# --- Timing and Resolution Settings (MUST BE IN dtparam FORMAT NOW) ---
+# Your legacy dpi_timings line was: 512 0 14 178 0 342 0 0 4 24 0 0 0 60 0 15667200 1
+# Try adjusting the vfp and hbp values to something small but non-zero
+#dtparam=hactive=512,hfp=14,hsync=178,hbp=2 
+#dtparam=vactive=342,vfp=1,vsync=4,vbp=4   
+dtparam=clock-frequency=15667200
+
+dtparam=hactive=512,hfp=15,hsync=178,hbp=2
+dtparam=vactive=342,vfp=1,vsync=4,vbp=24
+dtparam=rgb888=1
+
+dtparam=hsync-invert=1
+dtparam=vsync-invert=1
+
+# Disable legacy settings that conflict with KMS
+# enable_dpi_lcd=1
+# display_default_lcd=1
+# dpi_group=2
+# dpi_mode=87
+# dpi_output_format=0x7f216
+# dpi_timings=512 0 14 178 0 342 0 0 4 24 0 0 0 60 0 15667200 1
+
+# legacy framebuffer settings (optional to comment out, but good practice)
+# framebuffer_width=512
+# framebuffer_height=342

@@ -1,0 +1,27 @@
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&gpio>;
+        __overlay__ {
+            dpi_pins: dpi_pins {
+                brcm,pins = <2 3 9>;
+                brcm,function = <2>; // ALT2 for DPI
+                brcm,pull = <0>;     // No pull
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&dpi>;
+        __overlay__ {
+            pinctrl-names = "default";
+            pinctrl-0 = <&dpi_pins>;
+            status = "okay";
+        };
+    };
+};

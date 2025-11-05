@@ -38,33 +38,21 @@ otg_mode=1
 dtoverlay=dwc2,dr_mode=host
 
 [all]
-# --- Macintosh Classic CRT via GPIO (DPI) ---
-# Avaktivera I2C/SPI/I2S om de används
-# dtparam=i2c_arm=on
-# dtparam=i2s=on
-# dtparam=spi=on
-
-# Aktivera DPI i 24-bit läge
+dtoverlay=fkms-v3d
 dtoverlay=dpi24
 
-# Bildparametrar för Macintosh Classic CRT
 overscan_left=0
 overscan_right=0
 overscan_top=0
 overscan_bottom=0
 
-# Framebuffer-upplösning
 framebuffer_width=512
 framebuffer_height=342
 
-# Aktivera DPI som standarddisplay
 enable_dpi_lcd=1
 display_default_lcd=1
 
-# Anpassade signalparametrar
 dpi_group=2
 dpi_mode=87
-dpi_output_format=0x76017
+dpi_output_format=0x7f216 #RGB24                       
 dpi_timings=512 0 14 178 0 342 0 0 4 24 0 0 0 60 0 15667200 1
-
-
